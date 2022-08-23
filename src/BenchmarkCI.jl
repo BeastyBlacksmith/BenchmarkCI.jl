@@ -320,10 +320,13 @@ function judge(
             JSON.print(io, metadata)
         end
     end
+
     let env = Base.active_project(),
+        env = contains(env, "benchmark/") ? normpath(env, "..", "Project.toml") : env,
         projecttoml = find_project_toml(env),
         manifesttoml = find_manifest_toml(env),
         dest = joinpath(workspace, "runnerenv")
+
         mkpath(dest)
         cp(projecttoml, joinpath(dest, "Project.toml"); force = true)
         cp(manifesttoml , joinpath(dest, "Manifest.toml"); force = true)
