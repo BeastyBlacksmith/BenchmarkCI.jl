@@ -18,7 +18,7 @@ import Markdown
 import Tar
 using Base64: base64decode
 using Logging: ConsoleLogger
-using Pkg: TOML
+using Pkg: Pkg, TOML
 using PkgBenchmark:
     BenchmarkConfig,
     BenchmarkJudgement,
@@ -247,6 +247,7 @@ function maybe_with_merged_project(f, project, pkgdir)
             code = """
             using Pkg
             Pkg.develop(Pkg.PackageSpec(path = $(repr(pkgdir))))
+            Pkg.precompile()
             """
             run(setenv(
                 `$(Base.julia_cmd()) --startup-file=no --project=$tmpproject -e $code`,
@@ -284,8 +285,12 @@ Run `benchmarkpkg` on `target` and `baseline`.
 - `postprocess`, `retune`, `verbose`, `logger_factory`: Passed to
   `PkgBenchmark.benchmarkpkg`.
 """
-judge(; target = nothing, baseline = "origin/master", kwargs...) =
-    judge(target, baseline; kwargs...)
+function judge(; target = nothing, baseline = "origin/master", kwargs...)
+    pkgdir = dirname(Base.active_project())
+    pkgdir = contains(pkgdir, "benchmark") ? normpath(pkgdir, "..") : pkgdir
+    workspace = joinpath(pkgdir, DEFAULT_WORKSPACE)
+    judge(target, baseline; pkgdir, workspace, kwargs...)
+end
 
 function judge(
     target,
@@ -321,7 +326,7 @@ function judge(
         end
     end
 
-    let env = Base.active_project(),
+    let env = pkgdir,
         env = contains(env, "benchmark/") ? normpath(env, "..", "Project.toml") : env,
         projecttoml = find_project_toml(env),
         manifesttoml = find_manifest_toml(env),
@@ -343,7 +348,7 @@ function judge(
             baseline = baseline,
             workspace = workspace,
             pkgdir = pkgdir,
-            benchmarkdir = dirname(script),
+            benchmarkdir = tmpproject,
             benchmarkpkg_kwargs = (;
                 kwargs...,
                 logger_factory = logger_factory,
@@ -376,22 +381,30 @@ function _judge(; target, baseline, workspace, pkgdir, benchmarkdir, benchmarkpk
     baseline_git_info = git_commit_info(something(baseline.id, "HEAD"), benchmarkdir)
     noisily() do
         start_date = Dates.now()
-        time_target = @elapsed group_target = PkgBenchmark.benchmarkpkg(
-            pkgdir,
-            target;
-            resultfile = joinpath(workspace, "result-target.json"),
-            benchmarkpkg_kwargs...,
-        )
-        mid_date = Dates.now()
-        @debug("`git status`", output = Text(read(`git status`, String)))
-        @debug("`git diff`", output = Text(read(`git diff`, String)))
-        time_baseline = @elapsed group_baseline = PkgBenchmark.benchmarkpkg(
-            pkgdir,
-            baseline;
-            resultfile = joinpath(workspace, "result-baseline.json"),
-            benchmarkpkg_kwargs...,
-        )
-        end_date = Dates.now()
+        current_project = Base.active_project()
+        local time_target, mid_date, time_baseline, end_date, group_target, group_baseline
+        try
+            Pkg.activate(benchmarkdir)
+            Pkg.status()
+            time_target = @elapsed group_target = PkgBenchmark.benchmarkpkg(
+                pkgdir,
+                target;
+                resultfile = joinpath(workspace, "result-target.json"),
+                benchmarkpkg_kwargs...,
+            )
+            mid_date = Dates.now()
+            @debug("`git status`", output = Text(read(`git status`, String)))
+            @debug("`git diff`", output = Text(read(`git diff`, String)))
+            time_baseline = @elapsed group_baseline = PkgBenchmark.benchmarkpkg(
+                pkgdir,
+                baseline;
+                resultfile = joinpath(workspace, "result-baseline.json"),
+                benchmarkpkg_kwargs...,
+            )
+            end_date = Dates.now()
+        finally
+            Pkg.activate(current_project)
+        end
         @info """
         Finish running benchmarks.
         * Target: $(format_period(time_target))
